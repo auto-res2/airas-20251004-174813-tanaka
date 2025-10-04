@@ -1,0 +1,103 @@
+
+Input:
+You are an AI researcher. You will conduct experiments to demonstrate the superiority of the new method described in # New Methods. Please output all information required to implement the experiments according to the format specified in # Output Format. The section # Experimental Environment describes the computational environment available for this experiment.
+
+# Experimental Environment
+NVIDIA A100
+VRAM：80GB
+RAM：2048 GB
+
+# Current Research Method (Target for Experiment Design)
+{
+    "Open Problems": "DiscoPOP (Log-Ratio Modulated Loss) couples two distinct roles into a single hyper-parameter β: (1) scaling the policy / reference log-ratio (implicitly setting the KL regularisation strength) and (2) controlling the sigmoid that blends the logistic and exponential branches. This coupling makes the loss highly sensitive; extreme β either flattens the blend (training stalls) or explodes gradients (model collapse). A minimal change that separates these two roles could stabilise training and widen the range of usable β values.",
+    "Methods": "Decoupled Log-Ratio Modulated Loss (dLRML)\n1. Keep DiscoPOP base idea but introduce two independent scalar hyper-parameters:\n   • β_kl   – multiplies the log-ratio before entering both loss branches (same place β is used today).\n   • β_mix – multiplies the log-ratio only inside the sigmoid that produces the mixing coefficient.\n2. Loss definition (for each preference pair):\n      ρ = (π_chosen − π_rejected) − (ref_chosen − ref_rejected)\n      z = β_kl * ρ                     # controls KL / gradient size\n      m = σ(β_mix * ρ / τ)             # controls branch weighting (τ=0.05 as in DiscoPOP)\n      L = (1-m) * (−log σ(z)) + m * exp(−z)\n3. Motivation:\n   • Decoupling lets one tune exploration (β_mix) without destabilising optimisation (β_kl).\n   • β_mix can be set larger to encourage faster transition to the exponential branch while keeping β_kl small enough to avoid gradient blow-up.\n   • Optional: make β_mix a learnable scalar updated by back-prop; this adds no inference cost.",
+    "Experimental Setup": "• Base model: HuggingFace mistralai/Mistral-7B-Instruct.\n• Dataset: Argilla DPO Mix 7K (same as DiscoPOP) – 6,889 pairwise preferences.\n• Training: 2 epochs, LR=5e-7, batch=2, grad_acc=8, bfloat16, AdamW.\n• Compare three losses:\n   1. DPO (baseline)\n   2. DiscoPOP (β=0.05)\n   3. dLRML (β_kl=0.05, β_mix=0.20)\n• Extra sweep: {β_kl∈[0.01,0.5]} × {β_mix∈[0.05,0.5]} to test stability.\n• Evaluation: MT-Bench score (FastChat) + AlpacaEval 2.0 single-turn chat win-rate.\n• Additional diagnostic: fraction of training steps with NaN/Inf gradients.",
+    "Experimental Code": "import torch, torch.nn.functional as F\n\ndef dlrml_loss(policy_chosen_logps,\n               policy_rejected_logps,\n               reference_chosen_logps,\n               reference_rejected_logps,\n               beta_kl=0.05,\n               beta_mix=0.20,\n               tau=0.05):\n    # log-ratio difference ρ\n    rho = (policy_chosen_logps - policy_rejected_logps) - \\\n          (reference_chosen_logps - reference_rejected_logps)\n\n    z = beta_kl * rho                    # affects gradient magnitude / KL strength\n    mix = torch.sigmoid(beta_mix * rho / tau)  # branch weight only\n\n    logistic = -F.logsigmoid(z)\n    exponential = torch.exp(-z)\n\n    loss = (1 - mix) * logistic + mix * exponential\n    return loss\n\n# quick unit test\nif __name__ == \"__main__\":\n    pc, pr, rc, rr = [torch.randn(10, requires_grad=True) for _ in range(4)]\n    l = dlrml_loss(pc, pr, rc, rr).mean()\n    l.backward()\n    print('loss:', l.item())",
+    "Expected Result": "1. MT-Bench: dLRML ≈ DiscoPOP +0.5 to +1.0 average points.\n2. Training stability: No NaN runs observed across the β sweep, while DiscoPOP fails for β≥0.25 in >40 % of runs.\n3. AlpacaEval win-rate: dLRML 2-3 % higher than DiscoPOP, 6-8 % higher than DPO.\n4. Gradient norms remain within safe range (checked via logging) even when β_mix is high.",
+    "Expected Conclusion": "A simple decoupling of the single β parameter into β_kl and β_mix removes an unnecessary trade-off between optimisation stability and behavioural shaping of the loss. The change is one extra multiplication and retains all advantages of DiscoPOP (adaptive blending of loss branches). Because β_mix can be tuned or learned independently, practitioners gain a wider, more stable hyper-parameter space and immediate performance gains without additional computational cost or architectural changes."
+}
+
+# MODEL LIST
+{
+    "Large Language Models": {
+        "Llama-4-Scout-17B-16E": "Llama 4, developed by Meta, is a new generation of natively multimodal AI models that leverage a Mixture-of-Experts (MoE) architecture to achieve state-of-the-art performance in both text and image understanding. Marking the beginning of a new era for the Llama ecosystem, the series introduces two models: Llama 4 Scout, a 17-billion-parameter model with 16 experts, and Llama 4 Maverick, also with 17 billion parameters but incorporating 128 experts. These auto-regressive language models employ early fusion to enable seamless multimodal processing, allowing them to integrate text and image information natively.",
+        "Llama-4-Maverick-17B-128E": "The Llama 4 collection, developed by Meta, represents a new generation of natively multimodal AI models designed to enable both text and multimodal experiences. By leveraging a Mixture-of-Experts (MoE) architecture, these models deliver industry-leading performance in understanding text and images. Marking the beginning of a new era for the Llama ecosystem, the series introduces two efficient models: Llama 4 Scout, a 17-billion-parameter model with 16 experts, and Llama 4 Maverick, also with 17 billion parameters but featuring 128 experts. Built as auto-regressive language models, the Llama 4 series incorporates early fusion to achieve seamless and native multimodality.",
+        "Qwen3-0.6B": "Qwen3-0.6B is a compact causal language model with 0.6B parameters, offering dense and MoE variants, improved reasoning, seamless mode switching, strong alignment, agent capabilities, multilingual support, and 32K context length.",
+        "Qwen3-1.7B": "Qwen3-1.7B is a next-generation causal language model with 1.7B parameters, offering dense and MoE variants, enhanced reasoning, seamless mode switching, strong alignment, agent capabilities, multilingual support, and long-context processing up to 32K tokens.",
+        "Qwen3-4B": "Qwen3 is the latest generation of large language models, featuring both dense and MoE variants with enhanced reasoning, instruction-following, agent capabilities, and multilingual support, including seamless mode switching, superior alignment, and long-context processing up to 131K tokens.",
+        "Qwen3-8B": "Qwen3-8B is an advanced causal language model with 8.2B parameters, featuring dense and MoE variants, enhanced reasoning, seamless mode switching, strong alignment, agent capabilities, multilingual support, and long-context processing up to 131K tokens.",
+        "Qwen3-14B": "Qwen3-14B is a large-scale causal language model with 14.8B parameters, offering dense and MoE variants, advanced reasoning, seamless mode switching, strong alignment, agent capabilities, multilingual support, and extended context handling up to 131K tokens.",
+        "Qwen3-32B": "Qwen3-32B is a powerful causal language model with 32.8B parameters, featuring dense and MoE variants, enhanced reasoning, seamless mode switching, strong alignment, advanced agent capabilities, multilingual support, and long-context processing up to 131K tokens.",
+        "DeepSeek-v3": "DeepSeek-V3 is a 671B-parameter MoE language model (37B active per token) featuring MLA and DeepSeekMoE architectures, auxiliary-loss-free load balancing, and multi-token prediction, trained on 14.8T tokens with efficient GPU usage, achieving performance comparable to top closed-source models while maintaining stable training.",
+        "DeepSeek-V3.1": "DeepSeek-V3.1 extends DeepSeek-V3 with larger long-context training (630B tokens at 32K and 209B tokens at 128K) and adopts FP8 data formats for efficiency and compatibility.",
+        "DeepSeek-V3.2-Exp": "DeepSeek-V3.2-Exp, built on V3.1-Terminus, introduces Sparse Attention to improve training and inference efficiency for long-context processing as part of ongoing research into more efficient transformer architectures.",
+        "gpt-oss-20b": "The gpt-oss series, introduced by OpenAI, consists of open-weight models designed to support powerful reasoning, agentic tasks, and a wide range of developer use cases. Two versions are being released: gpt-oss-120b, a 117-billion-parameter model with 5.1 billion active parameters optimized for production-level, general-purpose, high-reasoning tasks that can fit into a single 80GB GPU such as the NVIDIA H100 or AMD MI300X; and gpt-oss-20b, a 21-billion-parameter model with 3.6 billion active parameters intended for lower latency, as well as local or specialized applications. Both models were trained using OpenAI’s harmony response format and must be used with this format to function correctly.",
+        "gemma-3-1b-it": "Gemma is a family of lightweight open models from Google, built on the same research as Gemini. The latest Gemma 3 models are multimodal, supporting both text and image inputs with text generation outputs. They feature a 128K context window (32K for the 1B model), multilingual support in over 140 languages, and come in multiple sizes, making them suitable for tasks such as question answering, summarization, reasoning, and image understanding. Their smaller size allows deployment on laptops, desktops, or personal cloud infrastructure, broadening access to advanced AI. Inputs include text and images normalized to 896×896 resolution, while outputs are generated text with up to 8192 tokens of context.",
+        "gemma-3-4b-it": "Gemma is a family of lightweight open models from Google, built on the same research behind the Gemini models. The latest Gemma 3 models are multimodal, capable of processing both text and images as input and generating text as output, with open weights for pre-trained and instruction-tuned variants. They offer a 128K context window (32K for the 1B model), support over 140 languages, and come in more sizes than earlier versions, making them suitable for tasks like question answering, summarization, reasoning, and image understanding. Thanks to their smaller size, Gemma models can run on laptops, desktops, or personal cloud setups, expanding access to advanced AI. Inputs include text and images (normalized to 896×896 and encoded to 256 tokens each), while outputs are generated text with up to 8192 tokens.",
+        "gemma-3-27b-it": "Gemma is a family of lightweight open models from Google, built on the same research as the Gemini models. The Gemma 3 series is multimodal, able to take both text and image inputs and generate text outputs, with open weights available for both pre-trained and instruction-tuned versions. They feature a 128K context window (32K for the 1B model), multilingual support in more than 140 languages, and come in a wider range of sizes than previous releases. Well-suited for tasks such as question answering, summarization, reasoning, and image understanding, Gemma models are compact enough to run on laptops, desktops, or personal cloud setups, making advanced AI more broadly accessible. Inputs include text strings or images normalized to 896×896 and encoded into 256 tokens each, while outputs are generated text of up to 8192 tokens."
+    },
+    "Vision Language Models": {},
+    "Vision Language Action Models": {},
+    "Diffusion Models": {}
+}
+
+# DATASET LIST
+{
+    "Text Datasets": {
+        "alpaca-cleaned": "",
+        "databricks-dolly-15k": ""
+    },
+    "Image Datasets": {
+        "ImageNet": "",
+        "CIFAR-10": ""
+    }
+}
+
+# Output Format
+- experiment_summary：
+  - Describe the overall implementation details of the experiment. Summarize the purpose, components, and workflow so that the entire structure of the experiment can be clearly understood.
+- evaluation_metrics：
+  - List all evaluation metrics used in this experiment, including only their names, in a list format. (e.g., Accuracy AUC ROC, F1 Score, RMSE, BLEU, ROUGE, etc.)
+- models_to_use：
+  - Select 1 deep learning or machine learning models to be used in the experiment and output them in a list format.
+  - Each model name should clearly indicate its number of parameters.
+  - Refer to the provided “# MODEL LIST” for guidance, although models not included in the list are also acceptable.
+  - If the proposed method itself introduces a new model (e.g., a novel architecture), return an empty list and describe the details of the method in new_method.
+- datasets_to_use：
+  - Select 1 datasets to be used in the experiment and output them in a list format.
+  - Refer to the provided “# DATASET LIST” for guidance, although datasets not included in the list are also acceptable.
+  - If a new dataset is proposed as part of this study, return an empty list and describe its details in new_method.
+- new_method：
+  - Describe the proposed method and its implementation in detail.
+  - Clearly state its objectives, theoretical background, components, and algorithmic procedures.
+- comparative_methods：
+  - Select 1 existing methods for comparison with the proposed method and output them in a list format.
+  - For example, if the proposed method is a new optimization algorithm, comparative methods might include Adam or AdamW.
+  - If the proposal is a new LLM architecture, comparative methods might include Llama 4 or Qwen.
+- hyperparameters_to_search：
+  - List all hyperparameters to be explored, including only their names, in a list format.
+Output:
+{
+    "experiment_summary": "Purpose: Demonstrate that the Decoupled Log-Ratio Modulated Loss (dLRML) improves alignment-tuning stability and final quality over the original DiscoPOP loss.\n\nComponents:\n1. Base model – Mistral-7B-Instruct, loaded in bfloat16 on a single NVIDIA A100-80GB.\n2. Training data – Argilla DPO Mix 7K (6,889 preference pairs).\n3. Loss functions – implement dLRML (proposed) and DiscoPOP (baseline) in PyTorch.\n4. Training protocol – 2 epochs, batch=2, grad_acc=8, AdamW, lr=5e-7, weight_decay=0.1, warm-up 5 %. Mixed precision (bf16) with gradient clipping at 1.0.\n5. Hyper-parameter sweep – grid over β_kl ∈ {0.01,0.05,0.1,0.25,0.5} and β_mix ∈ {0.05,0.1,0.2,0.35,0.5} (25 runs) to probe stability; record NaN/Inf incidence.\n6. Evaluation – after each run compute MT-Bench via FastChat and AlpacaEval-2.0 single-turn win-rate. Log validation KL divergence and gradient norms.\n\nWorkflow: (a) fine-tune the reference model copies, (b) train with each loss variant across the β grid, (c) collect metrics, (d) compare average scores and failure rates, (e) analyse trade-off curves to show dLRML expands the stable/performant region.",
+    "evaluation_metrics": [
+        "MT-Bench Score",
+        "AlpacaEval 2.0 Win-Rate",
+        "Gradient NaN/Inf Incidence",
+        "Average Gradient Norm",
+        "Validation KL Divergence"
+    ],
+    "models_to_use": [
+        "Mistral-7B-Instruct (7B parameters)"
+    ],
+    "datasets_to_use": [
+        "Argilla DPO Mix 7K"
+    ],
+    "new_method": "Decoupled Log-Ratio Modulated Loss (dLRML)\nObjective: Separate the dual roles of DiscoPOP’s single β parameter—(1) scaling the policy/reference log-ratio to set KL regularisation strength and (2) shaping the sigmoid that mixes logistic and exponential branches—to achieve stable optimisation and flexible behavioural control.\n\nTheory: Given log-probabilities of chosen/rejected answers from policy (π) and frozen reference (ref), define the log-ratio difference ρ = (π_chosen−π_rejected) − (ref_chosen−ref_rejected).\n\nTwo independent scalars are introduced:\n• β_kl – multiplies ρ everywhere it influences gradients and thus acts like the DPO temperature / KL strength.\n• β_mix – multiplies ρ only inside the sigmoid that yields the branch-mixing coefficient; it governs how quickly the loss shifts weight toward the exponential branch that strongly penalises preference violations.\n\nAlgorithm (per preference pair):\n1. ρ ← (π_c−π_r) − (ref_c−ref_r)\n2. z ← β_kl · ρ\n3. m ← σ(β_mix · ρ / τ)  with τ=0.05 (same as DiscoPOP)\n4. logistic ← −log σ(z)\n5. exponential ← exp(−z)\n6. L ← (1−m)·logistic + m·exponential\n\nImplementation: six tensor operations; one extra multiply relative to DiscoPOP. β_mix can optionally be made a learnable scalar updated via back-prop.\n\nExpected effect: Allows large β_mix (strong behavioural shaping) without destabilising gradients because β_kl remains moderate. Widens stable region, reduces NaNs, and achieves higher evaluation scores.",
+    "comparative_methods": [
+        "DiscoPOP (Log-Ratio Modulated Loss)"
+    ],
+    "hyperparameters_to_search": [
+        "β_kl",
+        "β_mix"
+    ]
+}
